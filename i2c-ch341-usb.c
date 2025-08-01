@@ -53,8 +53,6 @@ struct i2c_ch341_usb {
 	u8 out_buf[32];
 };
 
-static int ch341_xfer(struct i2c_ch341_usb *dev, int out_len, int in_len);
-
 static int ch341_i2c_xfer_msg(struct i2c_adapter *adapter, struct i2c_msg *msg, bool stop)
 {
 	struct i2c_ch341_usb *dev = (struct i2c_ch341_usb *)adapter->algo_data;
@@ -147,38 +145,11 @@ static const struct usb_device_id i2c_ch341_usb_table[] = {
 };
 MODULE_DEVICE_TABLE(usb, i2c_ch341_usb_table);
 
-static int ch341_xfer(struct i2c_ch341_usb *dev, int out_len, int in_len)
-{
-	int retval;
-	int actual;
-
-	dev_dbg(&dev->adapter.dev, "bulk_out %d bytes, bulk_in %d bytes\n",
-		out_len, (in_len == 0) ? 0 : 32);
-
-	retval = usb_bulk_msg(dev->usb_dev,
-			      usb_sndbulkpipe(dev->usb_dev, dev->ep_out),
-			      dev->out_buf, out_len, &actual, 2000);
-	if (retval < 0)
-		return retval;
-
-	if (in_len == 0)
-		return actual;
-
-	memset(dev->in_buf, 0, sizeof(dev->in_buf));
-	retval = usb_bulk_msg(dev->usb_dev,
-			      usb_rcvbulkpipe(dev->usb_dev, dev->ep_in),
-			      dev->in_buf, 32, &actual, 2000);
-	if (retval < 0)
-		return retval;
-
-	return actual;
-}
-
 static int i2c_ch341_usb_probe(struct usb_interface *iface,
 			       const struct usb_device_id *id)
 {
 	struct i2c_ch341_usb *dev;
-	int retval;
+	int ret, act = 0;
 
 	dev = devm_kzalloc(&iface->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
@@ -209,10 +180,11 @@ static int i2c_ch341_usb_probe(struct usb_interface *iface,
 	dev->out_buf[0] = CH341_CMD_I2C_STREAM;
 	dev->out_buf[1] = CH341_CMD_I2C_STM_SET | CH341_I2C_STANDARD_SPEED;
 	dev->out_buf[2] = CH341_CMD_I2C_STM_END;
-	retval = ch341_xfer(dev, 3, 0);
-	if (retval < 0) {
-		dev_err(&dev->adapter.dev, "failure setting speed\n");
-		return -EIO;
+	ret = usb_bulk_msg(dev->usb_dev, usb_sndbulkpipe(dev->usb_dev, dev->ep_out),
+			   dev->out_buf, 3, &act, 2000);
+	if (ret < 0 || act != 3) {
+		dev_err(&iface->dev, "bulk out %d/3 error %d\n", act, ret);
+		return (ret < 0) ? ret : -EIO;
 	}
 
 	/* and finally attach to i2c layer */
