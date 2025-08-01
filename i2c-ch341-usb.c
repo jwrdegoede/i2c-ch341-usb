@@ -49,8 +49,7 @@ struct i2c_ch341_usb {
 	int ep_in;
 	int ep_out;
 
-	u8 in_buf[32];
-	u8 out_buf[32];
+	u8 buf[32];
 };
 
 static int ch341_i2c_xfer_msg(struct i2c_adapter *adapter, struct i2c_msg *msg, bool stop)
@@ -59,11 +58,11 @@ static int ch341_i2c_xfer_msg(struct i2c_adapter *adapter, struct i2c_msg *msg, 
 	int ret, act, n;
 
 	n = 0;
-	dev->out_buf[n++] = CH341_CMD_I2C_STREAM;
-	dev->out_buf[n++] = CH341_CMD_I2C_STM_STA;
+	dev->buf[n++] = CH341_CMD_I2C_STREAM;
+	dev->buf[n++] = CH341_CMD_I2C_STM_STA;
 	/* OUT with len 0 means send 1 byte and receive 1 status byte with ack info */
-	dev->out_buf[n++] = CH341_CMD_I2C_STM_OUT;
-	dev->out_buf[n++] = (msg->addr << 1) | (msg->flags & I2C_M_RD);
+	dev->buf[n++] = CH341_CMD_I2C_STM_OUT;
+	dev->buf[n++] = (msg->addr << 1) | (msg->flags & I2C_M_RD);
 	if (msg->len) {
 		if (msg->flags & I2C_M_RD) {
 			/*
@@ -71,22 +70,22 @@ static int ch341_i2c_xfer_msg(struct i2c_adapter *adapter, struct i2c_msg *msg, 
 			 * the last byte. Without this the adapter gets confused.
 			 */
 			if (msg->len > 1)
-				dev->out_buf[n++] = CH341_CMD_I2C_STM_IN | (msg->len - 1);
-			dev->out_buf[n++] = CH341_CMD_I2C_STM_IN;
+				dev->buf[n++] = CH341_CMD_I2C_STM_IN | (msg->len - 1);
+			dev->buf[n++] = CH341_CMD_I2C_STM_IN;
 		} else {
-			dev->out_buf[n++] = CH341_CMD_I2C_STM_OUT | msg->len;
-			memcpy(&dev->out_buf[n], msg->buf, msg->len);
+			dev->buf[n++] = CH341_CMD_I2C_STM_OUT | msg->len;
+			memcpy(&dev->buf[n], msg->buf, msg->len);
 			n += msg->len;
 		}
 	}
 
 	if (stop)
-		dev->out_buf[n++] = CH341_CMD_I2C_STM_STO;
-	dev->out_buf[n++] = CH341_CMD_I2C_STM_END;
+		dev->buf[n++] = CH341_CMD_I2C_STM_STO;
+	dev->buf[n++] = CH341_CMD_I2C_STM_END;
 
 	act = 0;
 	ret = usb_bulk_msg(dev->usb_dev, usb_sndbulkpipe(dev->usb_dev, dev->ep_out),
-			   dev->out_buf, n, &act, 2000);
+			   dev->buf, n, &act, 2000);
 	if (ret < 0 || act != n) {
 		dev_err(&adapter->dev, "bulk out %d/%d error %d\n", act, n, ret);
 		return (ret < 0) ? ret : -EIO;
@@ -95,17 +94,17 @@ static int ch341_i2c_xfer_msg(struct i2c_adapter *adapter, struct i2c_msg *msg, 
 	act = 0;
 	n = 1 + ((msg->flags & I2C_M_RD) ? msg->len : 0);
 	ret = usb_bulk_msg(dev->usb_dev, usb_rcvbulkpipe(dev->usb_dev, dev->ep_in),
-			   dev->in_buf, 32, &act, 2000);
+			   dev->buf, 32, &act, 2000);
 	if (ret < 0 || act != n) {
 		dev_err(&adapter->dev, "bulk in %d/%d error %d\n", act, n, ret);
 		return (ret < 0) ? ret : -EIO;
 	}
 
-	if (dev->in_buf[0] & 0x80)
+	if (dev->buf[0] & 0x80)
 		return -EREMOTEIO;
 
 	if (msg->flags & I2C_M_RD)
-		memcpy(msg->buf, &dev->in_buf[1], msg->len);
+		memcpy(msg->buf, &dev->buf[1], msg->len);
 
 	return 0;
 }
@@ -177,11 +176,11 @@ static int i2c_ch341_usb_probe(struct usb_interface *iface,
 	dev->adapter.dev.parent = &dev->iface->dev;
 
 	/* set ch341 i2c speed */
-	dev->out_buf[0] = CH341_CMD_I2C_STREAM;
-	dev->out_buf[1] = CH341_CMD_I2C_STM_SET | CH341_I2C_STANDARD_SPEED;
-	dev->out_buf[2] = CH341_CMD_I2C_STM_END;
+	dev->buf[0] = CH341_CMD_I2C_STREAM;
+	dev->buf[1] = CH341_CMD_I2C_STM_SET | CH341_I2C_STANDARD_SPEED;
+	dev->buf[2] = CH341_CMD_I2C_STM_END;
 	ret = usb_bulk_msg(dev->usb_dev, usb_sndbulkpipe(dev->usb_dev, dev->ep_out),
-			   dev->out_buf, 3, &act, 2000);
+			   dev->buf, 3, &act, 2000);
 	if (ret < 0 || act != 3) {
 		dev_err(&iface->dev, "bulk out %d/3 error %d\n", act, ret);
 		return (ret < 0) ? ret : -EIO;
