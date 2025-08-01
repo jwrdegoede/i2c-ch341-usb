@@ -142,9 +142,9 @@ static const struct i2c_adapter_quirks ch341_i2c_quirks = {
 };
 
 static const struct usb_device_id i2c_ch341_usb_table[] = {
-	{USB_DEVICE(0x1a86, 0x5512)},
-	{}};
-
+	{ USB_DEVICE(0x1a86, 0x5512) },
+	{ }
+};
 MODULE_DEVICE_TABLE(usb, i2c_ch341_usb_table);
 
 static int ch341_xfer(struct i2c_ch341_usb *dev, int out_len, int in_len)
