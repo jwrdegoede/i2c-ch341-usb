@@ -174,25 +174,17 @@ static int ch341_xfer(struct i2c_ch341_usb *dev, int out_len, int in_len)
 	return actual;
 }
 
-static void i2c_ch341_usb_free(struct i2c_ch341_usb *dev)
-{
-	usb_put_dev(dev->usb_dev);
-	kfree(dev);
-}
-
 static int i2c_ch341_usb_probe(struct usb_interface *iface,
 			       const struct usb_device_id *id)
 {
 	struct i2c_ch341_usb *dev;
-	int retval = -ENOMEM;
+	int retval;
 
-	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
-	if (dev == NULL) {
-		dev_err(&iface->dev, "Out of memory\n");
-		goto error;
-	}
+	dev = devm_kzalloc(&iface->dev, sizeof(*dev), GFP_KERNEL);
+	if (!dev)
+		return -ENOMEM;
 
-	dev->usb_dev = usb_get_dev(interface_to_usbdev(iface));
+	dev->usb_dev = interface_to_usbdev(iface);
 	dev->iface = iface;
 
 	dev->ep_out = iface->cur_altsetting->endpoint[1].desc.bEndpointAddress;
@@ -213,9 +205,6 @@ static int i2c_ch341_usb_probe(struct usb_interface *iface,
 
 	dev->adapter.dev.parent = &dev->iface->dev;
 
-	/* and finally attach to i2c layer */
-	i2c_add_adapter(&dev->adapter);
-
 	/* set ch341 i2c speed */
 	dev->out_buf[0] = CH341_CMD_I2C_STREAM;
 	dev->out_buf[1] = CH341_CMD_I2C_STM_SET | CH341_I2C_STANDARD_SPEED;
@@ -223,30 +212,16 @@ static int i2c_ch341_usb_probe(struct usb_interface *iface,
 	retval = ch341_xfer(dev, 3, 0);
 	if (retval < 0) {
 		dev_err(&dev->adapter.dev, "failure setting speed\n");
-		retval = -EIO;
-		goto error;
+		return -EIO;
 	}
 
-	dev_info(&dev->adapter.dev, "connected i2c-ch341-usb device\n");
-
-	return 0;
-
-error:
-	if (dev)
-		i2c_ch341_usb_free(dev);
-
-	return retval;
+	/* and finally attach to i2c layer */
+	return devm_i2c_add_adapter(&iface->dev, &dev->adapter);
 }
 
 static void i2c_ch341_usb_disconnect(struct usb_interface *iface)
 {
-	struct i2c_ch341_usb *dev = usb_get_intfdata(iface);
-
-	i2c_del_adapter(&dev->adapter);
-	usb_set_intfdata(iface, NULL);
-	i2c_ch341_usb_free(dev);
-
-	dev_dbg(&iface->dev, "disconnected\n");
+	/* Having a disconnect handler is mandatory for USB drivers */
 }
 
 static struct usb_driver i2c_ch341_usb_driver = {
