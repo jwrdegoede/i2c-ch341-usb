@@ -38,6 +38,8 @@
 #define CH341_CMD_I2C_STM_SET 0x60
 #define CH341_CMD_I2C_STM_END 0x00
 
+#define CH341_MAX_BULK_PACKET_SIZE 32
+
 /* Structure to hold all of our device specific stuff */
 struct i2c_ch341_usb {
 	struct usb_device *usb_dev;  /* the usb device for this device */
@@ -134,6 +136,11 @@ static const struct i2c_algorithm ch341_i2c_algorithm = {
 	.functionality = ch341_i2c_func,
 };
 
+static const struct i2c_adapter_quirks ch341_i2c_quirks = {
+	.max_read_len = CH341_MAX_BULK_PACKET_SIZE - 1, /* -1 for status byte */
+	.max_write_len = CH341_MAX_BULK_PACKET_SIZE - 7, /* -7 for proto overhead */
+};
+
 static const struct usb_device_id i2c_ch341_usb_table[] = {
 	{USB_DEVICE(0x1a86, 0x5512)},
 	{}};
@@ -199,6 +206,7 @@ static int i2c_ch341_usb_probe(struct usb_interface *iface,
 	dev->adapter.class = I2C_CLASS_HWMON;
 	dev->adapter.algo = &ch341_i2c_algorithm;
 	dev->adapter.algo_data = dev;
+	dev->adapter.quirks = &ch341_i2c_quirks;
 	snprintf(dev->adapter.name, sizeof(dev->adapter.name),
 		 "i2c-ch341-usb at bus %03d device %03d",
 		 dev->usb_dev->bus->busnum, dev->usb_dev->devnum);
