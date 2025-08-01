@@ -1,6 +1,7 @@
 /*
  * Driver for the CH341 USB-I2C adapter
  *
+ * Copyright (c) 2025 Hans de Goede <hansg@kernel.org>
  * Copyright (c) 2016 Tse Lun Bien
  *
  * Derived from:
@@ -22,8 +23,6 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/usb.h>
-
-#define DRV_VERSION "1.1"
 
 #define CH341_I2C_LOW_SPEED 0      // low speed - 20kHz
 #define CH341_I2C_STANDARD_SPEED 1 // standard speed - 100kHz
@@ -54,110 +53,72 @@ struct i2c_ch341_usb {
 
 static int ch341_xfer(struct i2c_ch341_usb *dev, int out_len, int in_len);
 
-/* ----- begin of i2c layer ---------------------------------------------- */
+static int ch341_i2c_xfer_msg(struct i2c_adapter *adapter, struct i2c_msg *msg, bool stop)
+{
+	struct i2c_ch341_usb *dev = (struct i2c_ch341_usb *)adapter->algo_data;
+	int ret, act, n;
+
+	n = 0;
+	dev->out_buf[n++] = CH341_CMD_I2C_STREAM;
+	dev->out_buf[n++] = CH341_CMD_I2C_STM_STA;
+	/* OUT with len 0 means send 1 byte and receive 1 status byte with ack info */
+	dev->out_buf[n++] = CH341_CMD_I2C_STM_OUT;
+	dev->out_buf[n++] = (msg->addr << 1) | (msg->flags & I2C_M_RD);
+	if (msg->len) {
+		if (msg->flags & I2C_M_RD) {
+			/*
+			 * The last command must be an STM_IN with 0 len to read
+			 * the last byte. Without this the adapter gets confused.
+			 */
+			if (msg->len > 1)
+				dev->out_buf[n++] = CH341_CMD_I2C_STM_IN | (msg->len - 1);
+			dev->out_buf[n++] = CH341_CMD_I2C_STM_IN;
+		} else {
+			dev->out_buf[n++] = CH341_CMD_I2C_STM_OUT | msg->len;
+			memcpy(&dev->out_buf[n], msg->buf, msg->len);
+			n += msg->len;
+		}
+	}
+
+	if (stop)
+		dev->out_buf[n++] = CH341_CMD_I2C_STM_STO;
+	dev->out_buf[n++] = CH341_CMD_I2C_STM_END;
+
+	act = 0;
+	ret = usb_bulk_msg(dev->usb_dev, usb_sndbulkpipe(dev->usb_dev, dev->ep_out),
+			   dev->out_buf, n, &act, 2000);
+	if (ret < 0 || act != n) {
+		dev_err(&adapter->dev, "bulk out %d/%d error %d\n", act, n, ret);
+		return (ret < 0) ? ret : -EIO;
+	}
+
+	act = 0;
+	n = 1 + ((msg->flags & I2C_M_RD) ? msg->len : 0);
+	ret = usb_bulk_msg(dev->usb_dev, usb_rcvbulkpipe(dev->usb_dev, dev->ep_in),
+			   dev->in_buf, 32, &act, 2000);
+	if (ret < 0 || act != n) {
+		dev_err(&adapter->dev, "bulk in %d/%d error %d\n", act, n, ret);
+		return (ret < 0) ? ret : -EIO;
+	}
+
+	if (dev->in_buf[0] & 0x80)
+		return -EREMOTEIO;
+
+	if (msg->flags & I2C_M_RD)
+		memcpy(msg->buf, &dev->in_buf[1], msg->len);
+
+	return 0;
+}
 
 static int ch341_i2c_xfer(struct i2c_adapter *adapter, struct i2c_msg *msgs,
 			  int num)
 {
-	struct i2c_ch341_usb *dev = (struct i2c_ch341_usb *)adapter->algo_data;
-	int retval;
-	int i;
-	int l;
+	int i, ret;
 
-	dev_dbg(&adapter->dev, "master xfer %d messages\n", num);
-
-	if (num == 1) {
-		/* size larger than endpoint max transfer size */
-		if ((msgs[0].len + 5) > 32)
-			return -EIO;
-
-		if (msgs[0].flags & I2C_M_RD) {
-			dev->out_buf[0] = CH341_CMD_I2C_STREAM;
-			dev->out_buf[1] = CH341_CMD_I2C_STM_STA;
-			dev->out_buf[2] = CH341_CMD_I2C_STM_OUT | 0x1;
-			dev->out_buf[3] = (msgs[0].addr << 1) | 0x1;
-
-			if (msgs[0].len) {
-				for (i = 0, l = msgs[0].len; l > 1; l--, i++)
-					dev->out_buf[i + 4] =
-						CH341_CMD_I2C_STM_IN | 1;
-				dev->out_buf[msgs[0].len + 3] =
-					CH341_CMD_I2C_STM_IN;
-			}
-
-			dev->out_buf[msgs[0].len + 4] = CH341_CMD_I2C_STM_STO;
-			dev->out_buf[msgs[0].len + 5] = CH341_CMD_I2C_STM_END;
-
-			retval = ch341_xfer(dev, msgs[0].len + 5, msgs[0].len);
-			if (retval < 0)
-				return retval;
-
-			memcpy(msgs[0].buf, dev->in_buf, msgs[0].len);
-		} else {
-			dev->out_buf[0] = CH341_CMD_I2C_STREAM;
-			dev->out_buf[1] = CH341_CMD_I2C_STM_STA;
-			dev->out_buf[2] =
-				CH341_CMD_I2C_STM_OUT | (msgs[0].len + 1);
-			dev->out_buf[3] = msgs[0].addr << 1;
-
-			memcpy(&dev->out_buf[4], msgs[0].buf, msgs[0].len);
-
-			dev->out_buf[msgs[0].len + 4] = CH341_CMD_I2C_STM_STO;
-			dev->out_buf[msgs[0].len + 5] = CH341_CMD_I2C_STM_END;
-
-			retval = ch341_xfer(dev, msgs[0].len + 5, 0);
-			if (retval < 0)
-				return retval;
-		}
-	} else if (num == 2) {
-		if (!(msgs[0].flags & I2C_M_RD) && (msgs[1].flags & I2C_M_RD)) {
-			/* size larger than endpoint max transfer size */
-			if (((msgs[0].len + 3) > 32)
-			    || ((msgs[1].len + 5) > 32))
-				return -EIO;
-
-			/* write data phase */
-			dev->out_buf[0] = CH341_CMD_I2C_STREAM;
-			dev->out_buf[1] = CH341_CMD_I2C_STM_STA;
-			dev->out_buf[2] =
-				CH341_CMD_I2C_STM_OUT | (msgs[0].len + 1);
-			dev->out_buf[3] = msgs[0].addr << 1;
-
-			memcpy(&dev->out_buf[4], msgs[0].buf, msgs[0].len);
-
-			retval = ch341_xfer(dev, msgs[0].len + 4, 0);
-			if (retval < 0)
-				return retval;
-
-			/* read data phase */
-			dev->out_buf[0] = CH341_CMD_I2C_STREAM;
-			dev->out_buf[1] = CH341_CMD_I2C_STM_STA;
-			dev->out_buf[2] = CH341_CMD_I2C_STM_OUT | 0x1;
-			dev->out_buf[3] = (msgs[1].addr << 1) | 0x1;
-
-			if (msgs[1].len) {
-				for (i = 0, l = msgs[1].len; l > 1; l--, i++)
-					dev->out_buf[i + 4] =
-						CH341_CMD_I2C_STM_IN | 1;
-				dev->out_buf[msgs[1].len + 3] =
-					CH341_CMD_I2C_STM_IN;
-			}
-
-			dev->out_buf[msgs[1].len + 4] = CH341_CMD_I2C_STM_STO;
-			dev->out_buf[msgs[1].len + 5] = CH341_CMD_I2C_STM_END;
-
-			retval = ch341_xfer(dev, msgs[1].len + 5, msgs[1].len);
-			if (retval < 0)
-				return retval;
-
-			memcpy(msgs[1].buf, dev->in_buf, msgs[1].len);
-		} else {
-			return -EIO;
-		}
-	} else {
-		dev_err(&adapter->dev,
-			"This case(num > 2) has not been support now\n");
-		return -EIO;
+	for (i = 0; i < num; i++) {
+		ret = ch341_i2c_xfer_msg(adapter, &msgs[i], i == (num - 1));
+		if (ret)
+			return ret;
 	}
 
 	return num;
@@ -167,10 +128,6 @@ static u32 ch341_i2c_func(struct i2c_adapter *adap)
 {
 	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
 }
-
-/* ----- end of i2c layer ------------------------------------------------ */
-
-/* ----- begin of usb layer ---------------------------------------------- */
 
 static const struct i2c_algorithm ch341_i2c_algorithm = {
 	.master_xfer = ch341_i2c_xfer,
@@ -290,12 +247,9 @@ static struct usb_driver i2c_ch341_usb_driver = {
 	.disconnect = i2c_ch341_usb_disconnect,
 	.id_table = i2c_ch341_usb_table,
 };
-
 module_usb_driver(i2c_ch341_usb_driver);
 
-/* ----- end of usb layer ------------------------------------------------ */
-
 MODULE_AUTHOR("Tse Lun Bien <allanbian@gmail.com>");
+MODULE_AUTHOR("Hans de Goede <hansg@kernel.org>");
 MODULE_DESCRIPTION("i2c-ch341-usb driver");
 MODULE_LICENSE("GPL");
-MODULE_VERSION(DRV_VERSION);
