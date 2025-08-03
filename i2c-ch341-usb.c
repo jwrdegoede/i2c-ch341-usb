@@ -45,6 +45,7 @@ struct i2c_ch341_usb {
 	struct usb_device *usb_dev;  /* the usb device for this device */
 	struct usb_interface *iface; /* the interface for this device */
 	struct i2c_adapter adapter;  /* i2c related things */
+	struct i2c_client *client;
 
 	unsigned int rx_pipe;
 	unsigned int tx_pipe;
@@ -142,6 +143,22 @@ static const struct usb_device_id i2c_ch341_usb_table[] = {
 };
 MODULE_DEVICE_TABLE(usb, i2c_ch341_usb_table);
 
+/*
+ * Instantiate SHT40 humidity/temp sensor client at address 0x44 for:
+ * https://github.com/jwrdegoede/kernel-driver-workshop/
+ */
+static int i2c_ch341_usb_instantiate_sht40_client(struct i2c_ch341_usb *dev)
+{
+	static const struct i2c_board_info board_info = {
+		.type = "sht40",
+		.addr = 0x44,
+		.dev_name = "sht40",
+	};
+
+	dev->client = i2c_new_client_device(&dev->adapter, &board_info);
+	return PTR_ERR_OR_ZERO(dev->client);
+}
+
 static int i2c_ch341_usb_probe(struct usb_interface *iface,
 			       const struct usb_device_id *id)
 {
@@ -197,12 +214,18 @@ static int i2c_ch341_usb_probe(struct usb_interface *iface,
 	}
 
 	/* and finally attach to i2c layer */
-	return devm_i2c_add_adapter(&iface->dev, &dev->adapter);
+	ret = devm_i2c_add_adapter(&iface->dev, &dev->adapter);
+	if (ret)
+		return ret;
+
+	return i2c_ch341_usb_instantiate_sht40_client(dev);
 }
 
 static void i2c_ch341_usb_disconnect(struct usb_interface *iface)
 {
-	/* Having a disconnect handler is mandatory for USB drivers */
+	struct i2c_ch341_usb *dev = usb_get_intfdata(iface);
+
+	i2c_unregister_device(dev->client);
 }
 
 static struct usb_driver i2c_ch341_usb_driver = {
