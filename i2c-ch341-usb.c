@@ -46,8 +46,8 @@ struct i2c_ch341_usb {
 	struct usb_interface *iface; /* the interface for this device */
 	struct i2c_adapter adapter;  /* i2c related things */
 
-	int ep_in;
-	int ep_out;
+	unsigned int rx_pipe;
+	unsigned int tx_pipe;
 
 	u8 buf[32];
 };
@@ -84,8 +84,7 @@ static int ch341_i2c_xfer_msg(struct i2c_adapter *adapter, struct i2c_msg *msg, 
 	dev->buf[n++] = CH341_CMD_I2C_STM_END;
 
 	act = 0;
-	ret = usb_bulk_msg(dev->usb_dev, usb_sndbulkpipe(dev->usb_dev, dev->ep_out),
-			   dev->buf, n, &act, 2000);
+	ret = usb_bulk_msg(dev->usb_dev, dev->tx_pipe, dev->buf, n, &act, 2000);
 	if (ret < 0 || act != n) {
 		dev_err(&adapter->dev, "bulk out %d/%d error %d\n", act, n, ret);
 		return (ret < 0) ? ret : -EIO;
@@ -93,8 +92,7 @@ static int ch341_i2c_xfer_msg(struct i2c_adapter *adapter, struct i2c_msg *msg, 
 
 	act = 0;
 	n = 1 + ((msg->flags & I2C_M_RD) ? msg->len : 0);
-	ret = usb_bulk_msg(dev->usb_dev, usb_rcvbulkpipe(dev->usb_dev, dev->ep_in),
-			   dev->buf, 32, &act, 2000);
+	ret = usb_bulk_msg(dev->usb_dev, dev->rx_pipe, dev->buf, 32, &act, 2000);
 	if (ret < 0 || act != n) {
 		dev_err(&adapter->dev, "bulk in %d/%d error %d\n", act, n, ret);
 		return (ret < 0) ? ret : -EIO;
@@ -147,6 +145,7 @@ MODULE_DEVICE_TABLE(usb, i2c_ch341_usb_table);
 static int i2c_ch341_usb_probe(struct usb_interface *iface,
 			       const struct usb_device_id *id)
 {
+	struct usb_endpoint_descriptor *ep_in, *ep_out;
 	struct i2c_ch341_usb *dev;
 	int ret, act = 0;
 
@@ -157,8 +156,20 @@ static int i2c_ch341_usb_probe(struct usb_interface *iface,
 	dev->usb_dev = interface_to_usbdev(iface);
 	dev->iface = iface;
 
-	dev->ep_out = iface->cur_altsetting->endpoint[1].desc.bEndpointAddress;
-	dev->ep_in = iface->cur_altsetting->endpoint[0].desc.bEndpointAddress;
+	/* Find the first bulk-in and bulk-out endpoints */
+	ret = usb_find_common_endpoints(iface->cur_altsetting, &ep_in, &ep_out, NULL, NULL);
+	if (ret)
+		return ret;
+
+	if (usb_endpoint_maxp(ep_in) != CH341_MAX_BULK_PACKET_SIZE ||
+	    usb_endpoint_maxp(ep_out) != CH341_MAX_BULK_PACKET_SIZE) {
+		dev_err(&iface->dev, "Invalid maxpacketsize in %d out %d\n",
+			usb_endpoint_maxp(ep_in), usb_endpoint_maxp(ep_out));
+		return -ENXIO;
+	}
+
+	dev->rx_pipe = usb_rcvbulkpipe(dev->usb_dev, usb_endpoint_num(ep_in));
+	dev->tx_pipe = usb_sndbulkpipe(dev->usb_dev, usb_endpoint_num(ep_out));
 
 	/* save our data pointer in this interface device */
 	usb_set_intfdata(iface, dev);
@@ -179,8 +190,7 @@ static int i2c_ch341_usb_probe(struct usb_interface *iface,
 	dev->buf[0] = CH341_CMD_I2C_STREAM;
 	dev->buf[1] = CH341_CMD_I2C_STM_SET | CH341_I2C_STANDARD_SPEED;
 	dev->buf[2] = CH341_CMD_I2C_STM_END;
-	ret = usb_bulk_msg(dev->usb_dev, usb_sndbulkpipe(dev->usb_dev, dev->ep_out),
-			   dev->buf, 3, &act, 2000);
+	ret = usb_bulk_msg(dev->usb_dev, dev->tx_pipe, dev->buf, 3, &act, 2000);
 	if (ret < 0 || act != 3) {
 		dev_err(&iface->dev, "bulk out %d/3 error %d\n", act, ret);
 		return (ret < 0) ? ret : -EIO;
